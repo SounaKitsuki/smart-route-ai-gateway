@@ -1,4 +1,4 @@
-import httpx
+﻿import httpx
 import json
 import time
 import asyncio
@@ -67,6 +67,8 @@ class RouterEngine:
     _model_stats: Dict[str, Dict[str, Any]] = {} # { "model_id": { "failures": 0.0, "success": 0, "last_updated": timestamp } }
     _stats_file: str = "model_stats.json"
     _tokenizer = None
+    _image_description_cache: Dict[str, Dict[str, Any]] = {} # { "image_url_or_path": { "description": "...", "timestamp": 1234567890 } }
+    _image_cache_file: str = "image_description_cache.json"
     
     def _normalize_model_entry(self, item: Any) -> Dict[str, Any]:
         """Normalize any model entry to a consistent dictionary format with 'model' and 'provider' fields."""
@@ -77,20 +79,25 @@ class RouterEngine:
             else:
                 # Old format dict without model field, treat as just model name
                 # This shouldn't happen, but handle it just in case
-                return {"model": str(item), "provider": "upstream"}
+                return {"model": str(item), "provider": "upstream", "multimodal": True}
         elif isinstance(item, str):
             # Old format string
             if "/" in item:
                 parts = item.split("/", 1)
-                return {"model": parts[1], "provider": parts[0]}
+                return {"model": parts[1], "provider": parts[0], "multimodal": True}
             else:
-                return {"model": item, "provider": "upstream"}
+                return {"model": item, "provider": "upstream", "multimodal": True}
         elif hasattr(item, "model") and hasattr(item, "provider"):
             # Pydantic ModelEntry object
-            return {"model": item.model, "provider": item.provider}
+            result = {"model": item.model, "provider": item.provider}
+            if hasattr(item, "multimodal"):
+                result["multimodal"] = item.multimodal
+            else:
+                result["multimodal"] = True
+            return result
         else:
             # Fallback
-            return {"model": str(item), "provider": "upstream"}
+            return {"model": str(item), "provider": "upstream", "multimodal": True}
     
     def _extract_model_id(self, item: Any) -> str:
         """Extract a unique model ID for stats tracking (provider/model or just model)."""
@@ -162,6 +169,8 @@ class RouterEngine:
         
         # Load stats from disk
         self._load_stats()
+        # Load image description cache from disk
+        self._load_image_cache()
         
         # Pre-populate stats for all configured models (if not in file)
         config = config_manager.get_config()
@@ -182,6 +191,44 @@ class RouterEngine:
             logger.info("Global HTTP Client closed")
         # Save stats to disk
         self._save_stats()
+        # Save image description cache to disk
+        self._save_image_cache()
+
+    def _load_image_cache(self):
+        if os.path.exists(self._image_cache_file):
+            try:
+                with open(self._image_cache_file, 'r', encoding='utf-8') as f:
+                    self._image_description_cache = json.load(f)
+                logger.info("Image description cache loaded from disk")
+            except Exception as e:
+                logger.error(f"Failed to load image description cache: {e}")
+                self._image_description_cache = {}
+
+    def _save_image_cache(self):
+        try:
+            with open(self._image_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self._image_description_cache, f, indent=2)
+            logger.info("Image description cache saved to disk")
+        except Exception as e:
+            logger.error(f"Failed to save image description cache: {e}")
+
+    def _cleanup_expired_image_cache(self):
+        """清理过期的图片描述缓存"""
+        config = config_manager.get_config()
+        ttl = config.providers.image_description_cache_ttl or 86400
+        now = time.time()
+        
+        expired_keys = []
+        for key, value in self._image_description_cache.items():
+            timestamp = value.get("timestamp", 0) if isinstance(value, dict) else 0
+            if now - timestamp > ttl:
+                expired_keys.append(key)
+        
+        if expired_keys:
+            for key in expired_keys:
+                del self._image_description_cache[key]
+            logger.info(f"[图片描述] 清理了 {len(expired_keys)} 个过期缓存")
+            self._save_image_cache()
 
     def _load_stats(self):
         if os.path.exists(self._stats_file):
@@ -200,6 +247,194 @@ class RouterEngine:
             logger.info("Model stats saved to disk")
         except Exception as e:
             logger.error(f"Failed to save model stats: {e}")
+
+    def _extract_image_urls(self, content: Any) -> List[str]:
+        """Extract all image URLs or paths from message content."""
+        image_urls = []
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict):
+                    if item.get("type") in ["image_url", "image"]:
+                        if "image_url" in item:
+                            url = item["image_url"].get("url", "")
+                            if url:
+                                image_urls.append(url)
+                        elif "url" in item:
+                            url = item.get("url", "")
+                            if url:
+                                image_urls.append(url)
+        return image_urls
+
+    def _has_image_content(self, messages: List[Dict[str, Any]]) -> bool:
+        """Check if any message contains image content."""
+        for msg in messages:
+            content = msg.get("content")
+            if self._extract_image_urls(content):
+                return True
+        return False
+
+    async def _describe_image(self, image_url: str) -> str:
+        """Describe an image using the configured image description models with automatic retry."""
+        self._cleanup_expired_image_cache()
+        
+        if image_url in self._image_description_cache:
+            cache_entry = self._image_description_cache[image_url]
+            if isinstance(cache_entry, dict) and "description" in cache_entry:
+                logger.info(f"[图片描述] 使用缓存: {image_url[:50]}...")
+                return cache_entry["description"]
+            elif isinstance(cache_entry, str):
+                logger.info(f"[图片描述] 使用缓存(旧格式): {image_url[:50]}...")
+                return cache_entry
+
+        config = config_manager.get_config()
+        image_desc_models = config.providers.image_description
+
+        if not image_desc_models:
+            logger.warning("[图片描述] 未配置图片描述模型")
+            return f"[图片: {image_url}]"
+
+        logger.info(f"[图片描述] 开始描述图片: {image_url[:50]}...")
+
+        last_error = None
+        for model_item in image_desc_models:
+            normalized = self._normalize_model_entry(model_item)
+            model_name = normalized["model"]
+            provider_id = normalized["provider"]
+
+            logger.info(f"[图片描述] 尝试使用: [{provider_id}] {model_name}")
+
+            try:
+                target_base_url = config.providers.upstream.base_url
+                target_api_key = config.providers.upstream.api_key
+                target_protocol = getattr(config.providers.upstream, "protocol", "openai")
+                target_verify_ssl = getattr(config.providers.upstream, "verify_ssl", True)
+
+                if provider_id != "upstream":
+                    if provider_id in config.providers.custom:
+                        provider = config.providers.custom[provider_id]
+                        target_base_url = provider.base_url
+                        target_api_key = provider.api_key
+                        target_protocol = getattr(provider, "protocol", "openai")
+                        target_verify_ssl = getattr(provider, "verify_ssl", True)
+                    else:
+                        logger.warning(f"[图片描述] Provider '{provider_id}' not found")
+                        continue
+
+                headers = {
+                    "Authorization": f"Bearer {target_api_key}",
+                    "Content-Type": "application/json"
+                }
+
+                timeout_config = httpx.Timeout(
+                    connect=10.0,
+                    read=30.0,
+                    write=10.0,
+                    pool=10.0
+                )
+
+                prompt = config.providers.image_description_prompt or "请详细描述这张图片的内容，包括主要物体、场景、颜色、文字等信息。"
+                
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": image_url}}
+                            ]
+                        }
+                    ],
+                    "max_tokens": 500
+                }
+
+                url = f"{target_base_url.rstrip('/')}/chat/completions"
+
+                temp_client = httpx.AsyncClient(verify=target_verify_ssl, timeout=timeout_config)
+                try:
+                    response = await temp_client.post(url, json=payload, headers=headers, timeout=timeout_config)
+                    if response.status_code == 200:
+                        resp_json = response.json()
+                        description = resp_json["choices"][0]["message"]["content"].strip()
+                        self._image_description_cache[image_url] = {
+                            "description": description,
+                            "timestamp": time.time()
+                        }
+                        self._save_image_cache()
+                        logger.info(f"[图片描述] 描述成功: {description[:100]}...")
+                        return description
+                    else:
+                        logger.warning(f"[图片描述] 请求失败: {response.status_code} - {response.text[:200]}")
+                        last_error = f"HTTP {response.status_code}"
+                finally:
+                    await temp_client.aclose()
+
+            except Exception as e:
+                logger.error(f"[图片描述] 异常: {str(e)}")
+                last_error = str(e)
+                continue
+
+        logger.error(f"[图片描述] 所有模型都失败了: {last_error}")
+        return f"[图片: {image_url}]"
+
+    async def _process_messages_with_images(self, messages: List[Dict[str, Any]], preserve_original: bool = True) -> List[Dict[str, Any]]:
+        """
+        Process messages: if they contain images, describe them and create a cleaned version.
+        If preserve_original is True, keeps the original images in a structured way for tool calls.
+        """
+        processed_messages = []
+        
+        for msg in messages:
+            content = msg.get("content")
+            image_urls = self._extract_image_urls(content)
+            
+            if not image_urls:
+                processed_messages.append(msg.copy())
+                continue
+
+            new_msg = msg.copy()
+            
+            if isinstance(content, list):
+                text_parts = []
+                image_parts = []
+                
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            text_parts.append(item.get("text", ""))
+                        elif item.get("type") in ["image_url", "image"]:
+                            image_parts.append(item)
+                
+                descriptions = []
+                for img_item in image_parts:
+                    img_url = None
+                    if "image_url" in img_item:
+                        img_url = img_item["image_url"].get("url", "")
+                    elif "url" in img_item:
+                        img_url = img_item.get("url", "")
+                    
+                    if img_url:
+                        desc = await self._describe_image(img_url)
+                        descriptions.append((img_url, desc))
+                
+                new_text = "\n".join(text_parts)
+                for img_url, desc in descriptions:
+                    new_text += f"\n\n[图片描述: {desc}]"
+                
+                if preserve_original:
+                    new_content = [{"type": "text", "text": new_text}]
+                    for img_url, desc in descriptions:
+                        new_content.append({
+                            "type": "image_url", 
+                            "image_url": {"url": img_url}
+                        })
+                    new_msg["content"] = new_content
+                else:
+                    new_msg["content"] = new_text
+            
+            processed_messages.append(new_msg)
+        
+        return processed_messages
 
     def _get_model_stats(self, model_id: str) -> Dict[str, Any]:
         if model_id not in self._model_stats:
@@ -896,7 +1131,38 @@ class RouterEngine:
                         logger.info(f"     提供商URL: {target_base_url}")
                         logger.info("  " + "─" * 56)
                         
-                        response_data = await self._call_upstream(request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
+                        has_images = self._has_image_content(request.messages)
+                        model_multimodal = normalized.get("multimodal", True)
+                        
+                        processed_request = request
+                        log_messages = request.messages
+                        if has_images and not model_multimodal:
+                            logger.info(f"  [图片处理] 检测到图片内容，但模型不支持多模态。开始图片转述...")
+                            processed_messages = await self._process_messages_with_images(
+                                request.messages, 
+                                preserve_original=False
+                            )
+                            processed_request = ChatCompletionRequest(
+                                model=request.model,
+                                messages=processed_messages,
+                                temperature=request.temperature,
+                                top_p=request.top_p,
+                                n=request.n,
+                                stream=request.stream,
+                                stop=request.stop,
+                                max_tokens=request.max_tokens,
+                                presence_penalty=request.presence_penalty,
+                                frequency_penalty=request.frequency_penalty,
+                                logit_bias=request.logit_bias,
+                                user=request.user,
+                                tools=request.tools,
+                                tool_choice=request.tool_choice,
+                                response_format=request.response_format
+                            )
+                            log_messages = processed_messages
+                            logger.info(f"  [图片处理] 图片转述完成，准备发送请求")
+                        
+                        response_data = await self._call_upstream(processed_request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
                         
                         self._record_success(model_id_for_stats)
 
@@ -935,7 +1201,11 @@ class RouterEngine:
 
                         background_tasks.add_task(
                             self._log_request,
-                            level, display_model_name, duration, "success", user_prompt, request.model_dump_json(), json.dumps(response_data), trace_events, None, retry_count, prompt_tokens, completion_tokens, token_source
+                            level, display_model_name, duration, "success", 
+                            self._extract_text_from_content(log_messages[-1].get("content")) if log_messages else user_prompt, 
+                            json.dumps({**request.model_dump(), "messages": log_messages}), 
+                            json.dumps(response_data), 
+                            trace_events, None, retry_count, prompt_tokens, completion_tokens, token_source
                         )
                         
                         trace_logger.log_separator("=")
@@ -1124,15 +1394,38 @@ class RouterEngine:
                     logger.info(f"     提供商URL: {target_base_url}")
                     logger.info("  " + "─" * 56)
                     
-                    # Pass callback or wrapper to capture internal events if needed, or just return them
-                    # Actually _call_upstream needs to return timing info or we pass a mutable object
-                    # Let's pass trace_events list to _call_upstream? No, it's better to keep it clean.
-                    # _call_upstream already logs to trace_logger. 
-                    # We need to capture those times for DB too.
-                    # Let's modify _call_upstream to return metadata along with response?
-                    # Or pass the add_trace_event callback.
+                    has_images = self._has_image_content(request.messages)
+                    model_multimodal = normalized.get("multimodal", True)
                     
-                    response_data = await self._call_upstream(request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
+                    processed_request = request
+                    log_messages = request.messages
+                    if has_images and not model_multimodal:
+                        logger.info(f"  [图片处理] 检测到图片内容，但模型不支持多模态。开始图片转述...")
+                        processed_messages = await self._process_messages_with_images(
+                            request.messages, 
+                            preserve_original=False
+                        )
+                        processed_request = ChatCompletionRequest(
+                            model=request.model,
+                            messages=processed_messages,
+                            temperature=request.temperature,
+                            top_p=request.top_p,
+                            n=request.n,
+                            stream=request.stream,
+                            stop=request.stop,
+                            max_tokens=request.max_tokens,
+                            presence_penalty=request.presence_penalty,
+                            frequency_penalty=request.frequency_penalty,
+                            logit_bias=request.logit_bias,
+                            user=request.user,
+                            tools=request.tools,
+                            tool_choice=request.tool_choice,
+                            response_format=request.response_format
+                        )
+                        log_messages = processed_messages
+                        logger.info(f"  [图片处理] 图片转述完成，准备发送请求")
+                    
+                    response_data = await self._call_upstream(processed_request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
                     
                     # Record Success for Adaptive Routing
                     self._record_success(model_id_for_stats)
@@ -1176,7 +1469,11 @@ class RouterEngine:
                     # Log success (Async via BackgroundTasks)
                     background_tasks.add_task(
                         self._log_request,
-                        level, display_model_name, duration, "success", user_prompt, request.model_dump_json(), json.dumps(response_data), trace_events, None, retry_count, prompt_tokens, completion_tokens, token_source
+                        level, display_model_name, duration, "success", 
+                        self._extract_text_from_content(log_messages[-1].get("content")) if log_messages else user_prompt, 
+                        json.dumps({**request.model_dump(), "messages": log_messages}), 
+                        json.dumps(response_data), 
+                        trace_events, None, retry_count, prompt_tokens, completion_tokens, token_source
                     )
                     
                     trace_logger.log_separator("=")

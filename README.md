@@ -5,7 +5,7 @@
 [![React](https://img.shields.io/badge/React-19-cyan)](https://react.dev/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109%2B-green)](https://fastapi.tiangolo.com/)
 
-一个现代化的、兼容 OpenAI 协议的智能路由网关。它能根据用户意图复杂度自动分流请求，支持多模型故障转移（Failover），并提供美观的 Web 管理面板。
+一个现代化的、兼容 OpenAI 协议的LLM Router网关。它能根据用户意图复杂度自动分流请求，支持多模型故障转移（Failover），并提供美观的 Web 管理面板。
 
 ![Dashboard Preview](docs/dashboard-preview.png)
 
@@ -60,6 +60,7 @@ openai_router/
 │   ├── config_manager.py   # 配置管理器
 │   ├── database.py         # SQLAlchemy 数据库模型
 │   ├── auth.py             # JWT、2FA、密码安全
+
 │   ├── logger.py           # 日志系统
 │   ├── config.json         # 配置文件
 │   ├── logs.db             # SQLite 数据库
@@ -126,7 +127,7 @@ openai_router/
 }
 ```
 
-### 智能路由配置
+### LLM Router配置
 
 启用 LLM 意图识别（使用小模型分析用户请求复杂度）：
 

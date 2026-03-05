@@ -14,6 +14,7 @@ class GeneralConfig(BaseModel):
 class ModelEntry(BaseModel):
     model: str
     provider: str = "upstream"
+    multimodal: bool = True
 
 class ModelsConfig(BaseModel):
     t1: List[ModelEntry] = [
@@ -118,6 +119,9 @@ class ProvidersConfig(BaseModel):
     upstream: UpstreamConfig = UpstreamConfig()
     custom: Dict[str, ProviderConfig] = {}
     map: Dict[str, str] = {} # model_provider_map
+    image_description: List[ModelEntry] = [] # 图片描述模型列表，支持自动失败重试
+    image_description_prompt: str = "请详细描述这张图片的内容，包括主要物体、场景、颜色、文字等信息。" # 图片转述提示词
+    image_description_cache_ttl: int = 86400 # 图片描述缓存过期时间(秒)，默认24小时
 
 class ParameterConfig(BaseModel):
     global_params: Dict[str, Any] = {}
@@ -191,8 +195,11 @@ class ConfigManager:
         """Convert model list from old format (strings with optional provider prefix) to new format (ModelEntry objects)."""
         result = []
         for item in model_list:
-            if isinstance(item, dict) and "model" in item:
-                # Already in new format
+            if isinstance(item, ModelEntry):
+                # Already a ModelEntry instance
+                result.append(item)
+            elif isinstance(item, dict) and "model" in item:
+                # Already in new format dict
                 result.append(ModelEntry(**item))
             elif isinstance(item, str):
                 # Old format: check for slash to extract provider
@@ -228,6 +235,14 @@ class ConfigManager:
                                 if isinstance(first_item, str) or (isinstance(first_item, dict) and "model" not in first_item):
                                     print(f"[INFO] Migrating {level} models from string format to ModelEntry format...")
                                     models_data[level] = [m.model_dump() for m in self._convert_model_list(models_data[level])]
+                    
+                    # Auto-convert image_description model list
+                    if "providers" in data and "image_description" in data["providers"] and data["providers"]["image_description"]:
+                        image_desc_list = data["providers"]["image_description"]
+                        first_item = image_desc_list[0] if image_desc_list else None
+                        if isinstance(first_item, str) or (isinstance(first_item, dict) and "model" not in first_item):
+                            print("[INFO] Migrating image_description models from string format to ModelEntry format...")
+                            data["providers"]["image_description"] = [m.model_dump() for m in self._convert_model_list(image_desc_list)]
                     
                     self._config = AppConfig(**data)
             except Exception as e:

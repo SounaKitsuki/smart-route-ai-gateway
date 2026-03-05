@@ -58,6 +58,7 @@ export interface GeneralConfig {
 export interface ModelEntry {
   model: string;
   provider: string;
+  multimodal?: boolean;
 }
 
 export interface ModelsConfig {
@@ -89,6 +90,9 @@ export interface ProvidersConfig {
   upstream: UpstreamConfig;
   custom: Record<string, ProviderConfig>;
   map: Record<string, string>;
+  image_description: (ModelEntry | string)[];
+  image_description_prompt: string;
+  image_description_cache_ttl: number;
 }
 
 export interface ParameterConfig {

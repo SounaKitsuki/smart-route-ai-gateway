@@ -321,6 +321,7 @@ function ModelSettings({ config, setConfig }: { config: AppConfig, setConfig: an
                                     // Normalize to consistent format
                                     let modelName: string;
                                     let providerId: string;
+                                    let multimodal: boolean;
                                     if (typeof item === 'string') {
                                         if (item.includes('/')) {
                                             const parts = item.split('/');
@@ -330,9 +331,11 @@ function ModelSettings({ config, setConfig }: { config: AppConfig, setConfig: an
                                             providerId = 'upstream';
                                             modelName = item;
                                         }
+                                        multimodal = true;
                                     } else {
                                         modelName = item.model;
                                         providerId = item.provider;
+                                        multimodal = item.multimodal ?? true;
                                     }
                                     
                                     const providerOptions = ['upstream', ...Object.keys(config.providers.custom || {})];
@@ -346,7 +349,7 @@ function ModelSettings({ config, setConfig }: { config: AppConfig, setConfig: an
                                                         value={providerId} 
                                                         onValueChange={(val) => {
                                                             const newList = [...config.models[level as 't1'|'t2'|'t3']];
-                                                            newList[idx] = { model: modelName, provider: val };
+                                                            newList[idx] = { model: modelName, provider: val, multimodal };
                                                             updateList(level as any, newList);
                                                         }}
                                                     >
@@ -368,10 +371,24 @@ function ModelSettings({ config, setConfig }: { config: AppConfig, setConfig: an
                                                         placeholder="模型名称"
                                                         onChange={(e) => {
                                                             const newList = [...config.models[level as 't1'|'t2'|'t3']];
-                                                            newList[idx] = { model: e.target.value, provider: providerId };
+                                                            newList[idx] = { model: e.target.value, provider: providerId, multimodal };
                                                             updateList(level as any, newList);
                                                         }}
                                                     />
+                                                </div>
+                                                <div className="flex flex-col gap-1.5 sm:w-[120px]">
+                                                    <Label className="text-xs text-muted-foreground sm:hidden">多模态</Label>
+                                                    <div className="flex items-center gap-2 h-10 px-3 border rounded-md bg-background">
+                                                        <Switch 
+                                                            checked={multimodal}
+                                                            onCheckedChange={(c) => {
+                                                                const newList = [...config.models[level as 't1'|'t2'|'t3']];
+                                                                newList[idx] = { model: modelName, provider: providerId, multimodal: c };
+                                                                updateList(level as any, newList);
+                                                            }}
+                                                        />
+                                                        <span className="text-sm">{multimodal ? '是' : '否'}</span>
+                                                    </div>
                                                 </div>
                                             </div>
                                             <div className="flex gap-1 sm:items-center justify-end">
@@ -405,13 +422,13 @@ function ModelSettings({ config, setConfig }: { config: AppConfig, setConfig: an
                                 })}
                                 <div className="flex gap-2">
                                     <Button variant="outline" size="sm" onClick={() => {
-                                        const newList = [...config.models[level as 't1'|'t2'|'t3'], { model: "", provider: "upstream" }];
+                                        const newList = [...config.models[level as 't1'|'t2'|'t3'], { model: "", provider: "upstream", multimodal: true }];
                                         updateList(level as any, newList);
                                     }}>
                                         <Plus className="h-4 w-4 mr-1"/> 添加模型
                                     </Button>
                                     <BatchAddDialog onAdd={(models) => {
-                                        const newList = [...config.models[level as 't1'|'t2'|'t3'], ...models.map(m => ({ model: m, provider: "upstream" }))];
+                                        const newList = [...config.models[level as 't1'|'t2'|'t3'], ...models.map(m => ({ model: m, provider: "upstream", multimodal: true }))];
                                         updateList(level as any, newList);
                                     }} />
                                 </div>
@@ -687,6 +704,148 @@ function ProviderSettings({ config, setConfig }: { config: AppConfig, setConfig:
                                  <Plus className="h-4 w-4 mr-2"/> 添加映射
                              </Button>
                          </div>
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>图片描述模型 (Image Description)</CardTitle>
+                    <CardDescription>配置用于转述图片的模型列表，支持自动失败重试。</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                        <Label>图片转述提示词</Label>
+                        <Textarea 
+                            value={config.providers.image_description_prompt || ""}
+                            placeholder="请详细描述这张图片的内容，包括主要物体、场景、颜色、文字等信息。"
+                            onChange={(e) => setConfig({
+                                ...config,
+                                providers: {
+                                    ...config.providers,
+                                    image_description_prompt: e.target.value
+                                }
+                            })}
+                            rows={3}
+                        />
+                    </div>
+                    <div className="space-y-2">
+                        <Label>缓存过期时间 (秒)</Label>
+                        <Input 
+                            type="number"
+                            value={config.providers.image_description_cache_ttl || 86400}
+                            onChange={(e) => setConfig({
+                                ...config,
+                                providers: {
+                                    ...config.providers,
+                                    image_description_cache_ttl: parseInt(e.target.value) || 86400
+                                }
+                            })}
+                        />
+                        <p className="text-xs text-muted-foreground">默认 86400 秒 (24小时)</p>
+                    </div>
+                    <div className="space-y-2">
+                        {(config.providers.image_description || []).map((item, idx) => {
+                            let modelName: string;
+                            let providerId: string;
+                            if (typeof item === 'string') {
+                                if (item.includes('/')) {
+                                    const parts = item.split('/');
+                                    providerId = parts[0];
+                                    modelName = parts[1];
+                                } else {
+                                    providerId = 'upstream';
+                                    modelName = item;
+                                }
+                            } else {
+                                modelName = item.model;
+                                providerId = item.provider;
+                            }
+                            
+                            const providerOptions = ['upstream', ...Object.keys(config.providers.custom || {})];
+                            
+                            return (
+                                <div key={idx} className="flex flex-col sm:flex-row gap-2 p-3 border rounded-lg bg-muted/30">
+                                    <div className="flex flex-col sm:flex-row gap-2 flex-1">
+                                        <div className="flex flex-col gap-1.5 sm:w-[160px]">
+                                            <Label className="text-xs text-muted-foreground sm:hidden">提供商</Label>
+                                            <Select 
+                                                value={providerId} 
+                                                onValueChange={(val) => {
+                                                    const newList = [...(config.providers.image_description || [])];
+                                                    newList[idx] = { model: modelName, provider: val };
+                                                    setConfig({
+                                                        ...config,
+                                                        providers: {
+                                                            ...config.providers,
+                                                            image_description: newList
+                                                        }
+                                                    });
+                                                }}
+                                            >
+                                                <SelectTrigger className="w-full sm:w-[160px]">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {providerOptions.map(p => (
+                                                        <SelectItem key={p} value={p}>{p}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div className="flex flex-col gap-1.5 flex-1">
+                                            <Label className="text-xs text-muted-foreground sm:hidden">模型名称</Label>
+                                            <Input 
+                                                className="w-full"
+                                                value={modelName}
+                                                placeholder="模型名称"
+                                                onChange={(e) => {
+                                                    const newList = [...(config.providers.image_description || [])];
+                                                    newList[idx] = { model: e.target.value, provider: providerId };
+                                                    setConfig({
+                                                        ...config,
+                                                        providers: {
+                                                            ...config.providers,
+                                                            image_description: newList
+                                                        }
+                                                    });
+                                                }}
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="flex gap-1 sm:items-center justify-end">
+                                        <Button variant="outline" size="sm" onClick={() => {
+                                              const newList = [...(config.providers.image_description || [])];
+                                              newList.splice(idx, 1);
+                                              setConfig({
+                                                  ...config,
+                                                  providers: {
+                                                      ...config.providers,
+                                                      image_description: newList
+                                                  }
+                                              });
+                                        }} className="gap-1">
+                                            <Trash2 className="h-4 w-4 text-red-500"/>
+                                            <span className="sm:hidden">删除</span>
+                                        </Button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                        <div className="flex gap-2">
+                            <Button variant="outline" size="sm" onClick={() => {
+                                const newList = [...(config.providers.image_description || []), { model: "", provider: "upstream" }];
+                                setConfig({
+                                    ...config,
+                                    providers: {
+                                        ...config.providers,
+                                        image_description: newList
+                                    }
+                                });
+                            }}>
+                                <Plus className="h-4 w-4 mr-1"/> 添加模型
+                            </Button>
+                        </div>
                     </div>
                 </CardContent>
             </Card>
