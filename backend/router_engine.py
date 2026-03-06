@@ -275,138 +275,170 @@ class RouterEngine:
 
     async def _describe_image(self, image_url: str) -> str:
         """Describe an image using the configured image description models with automatic retry."""
-        self._cleanup_expired_image_cache()
-        
-        if image_url in self._image_description_cache:
-            cache_entry = self._image_description_cache[image_url]
-            if isinstance(cache_entry, dict) and "description" in cache_entry:
-                logger.info(f"[图片描述] 使用缓存: {image_url[:50]}...")
-                return cache_entry["description"]
-            elif isinstance(cache_entry, str):
-                logger.info(f"[图片描述] 使用缓存(旧格式): {image_url[:50]}...")
-                return cache_entry
+        try:
+            logger.info(f"[图片描述_DEBUG] _describe_image 开始执行, image_url: {image_url[:100] if image_url else 'None'}")
+            self._cleanup_expired_image_cache()
+            
+            if image_url in self._image_description_cache:
+                logger.info(f"[图片描述_DEBUG] 发现缓存")
+                cache_entry = self._image_description_cache[image_url]
+                if isinstance(cache_entry, dict) and "description" in cache_entry:
+                    logger.info(f"[图片描述] 使用缓存: {image_url[:50]}...")
+                    return cache_entry["description"]
+                elif isinstance(cache_entry, str):
+                    logger.info(f"[图片描述] 使用缓存(旧格式): {image_url[:50]}...")
+                    return cache_entry
 
-        config = config_manager.get_config()
-        image_desc_models = config.providers.image_description
+            config = config_manager.get_config()
+            image_desc_models = config.providers.image_description
+            logger.info(f"[图片描述_DEBUG] 配置的图片描述模型: {image_desc_models}")
 
-        if not image_desc_models:
-            logger.warning("[图片描述] 未配置图片描述模型")
-            return f"[图片: {image_url}]"
+            if not image_desc_models:
+                logger.warning("[图片描述] 未配置图片描述模型")
+                return f"[图片: {image_url}]"
 
-        logger.info(f"[图片描述] 开始描述图片: {image_url[:50]}...")
+            logger.info(f"[图片描述] 开始描述图片: {image_url[:50]}...")
 
-        last_error = None
-        for model_item in image_desc_models:
-            normalized = self._normalize_model_entry(model_item)
-            model_name = normalized["model"]
-            provider_id = normalized["provider"]
-
-            logger.info(f"[图片描述] 尝试使用: [{provider_id}] {model_name}")
-
-            try:
-                target_base_url = config.providers.upstream.base_url
-                target_api_key = config.providers.upstream.api_key
-                target_protocol = getattr(config.providers.upstream, "protocol", "openai")
-                target_verify_ssl = getattr(config.providers.upstream, "verify_ssl", True)
-
-                if provider_id != "upstream":
-                    if provider_id in config.providers.custom:
-                        provider = config.providers.custom[provider_id]
-                        target_base_url = provider.base_url
-                        target_api_key = provider.api_key
-                        target_protocol = getattr(provider, "protocol", "openai")
-                        target_verify_ssl = getattr(provider, "verify_ssl", True)
-                    else:
-                        logger.warning(f"[图片描述] Provider '{provider_id}' not found")
-                        continue
-
-                headers = {
-                    "Authorization": f"Bearer {target_api_key}",
-                    "Content-Type": "application/json"
-                }
-
-                timeout_config = httpx.Timeout(
-                    connect=10.0,
-                    read=30.0,
-                    write=10.0,
-                    pool=10.0
-                )
-
-                prompt = config.providers.image_description_prompt or "请详细描述这张图片的内容，包括主要物体、场景、颜色、文字等信息。"
-                
-                payload = {
-                    "model": model_name,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": image_url}}
-                            ]
-                        }
-                    ],
-                    "max_tokens": 2048
-                }
-
-                url = f"{target_base_url.rstrip('/')}/chat/completions"
-
-                temp_client = httpx.AsyncClient(verify=target_verify_ssl, timeout=timeout_config)
+            last_error = None
+            for model_idx, model_item in enumerate(image_desc_models):
+                logger.info(f"[图片描述_DEBUG] 处理第 {model_idx+1} 个模型: {model_item}")
                 try:
-                    response = await temp_client.post(url, json=payload, headers=headers, timeout=timeout_config)
-                    if response.status_code == 200:
-                        resp_json = response.json()
-                        description = resp_json["choices"][0]["message"]["content"].strip()
-                        self._image_description_cache[image_url] = {
-                            "description": description,
-                            "timestamp": time.time()
-                        }
-                        self._save_image_cache()
-                        logger.info(f"[图片描述] 描述成功: {description[:100]}...")
-                        return description
-                    else:
-                        logger.warning(f"[图片描述] 请求失败: {response.status_code} - {response.text[:200]}")
-                        last_error = f"HTTP {response.status_code}"
-                finally:
-                    await temp_client.aclose()
+                    normalized = self._normalize_model_entry(model_item)
+                    model_name = normalized["model"]
+                    provider_id = normalized["provider"]
+                    logger.info(f"[图片描述_DEBUG] 归一化后 - model: {model_name}, provider: {provider_id}")
 
-            except Exception as e:
-                logger.error(f"[图片描述] 异常: {str(e)}")
-                last_error = str(e)
-                continue
+                    logger.info(f"[图片描述] 尝试使用: [{provider_id}] {model_name}")
 
-        logger.error(f"[图片描述] 所有模型都失败了: {last_error}")
-        return f"[图片: {image_url}]"
+                    target_base_url = config.providers.upstream.base_url
+                    target_api_key = config.providers.upstream.api_key
+                    target_protocol = getattr(config.providers.upstream, "protocol", "openai")
+                    target_verify_ssl = getattr(config.providers.upstream, "verify_ssl", True)
+
+                    logger.info(f"[图片描述_DEBUG] 上游配置 - base_url: {target_base_url}, verify_ssl: {target_verify_ssl}")
+
+                    if provider_id != "upstream":
+                        logger.info(f"[图片描述_DEBUG] 使用自定义提供商: {provider_id}")
+                        if provider_id in config.providers.custom:
+                            provider = config.providers.custom[provider_id]
+                            target_base_url = provider.base_url
+                            target_api_key = provider.api_key
+                            target_protocol = getattr(provider, "protocol", "openai")
+                            target_verify_ssl = getattr(provider, "verify_ssl", True)
+                            logger.info(f"[图片描述_DEBUG] 自定义提供商配置 - base_url: {target_base_url}")
+                        else:
+                            logger.warning(f"[图片描述] Provider '{provider_id}' not found")
+                            continue
+
+                    headers = {
+                        "Authorization": f"Bearer {target_api_key}",
+                        "Content-Type": "application/json"
+                    }
+
+                    timeout_config = httpx.Timeout(
+                        connect=10.0,
+                        read=30.0,
+                        write=10.0,
+                        pool=10.0
+                    )
+
+                    prompt = config.providers.image_description_prompt or "请详细描述这张图片的内容，包括主要物体、场景、颜色、文字等信息。"
+                    
+                    payload = {
+                        "model": model_name,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {"type": "image_url", "image_url": {"url": image_url}}
+                                ]
+                            }
+                        ],
+                        "max_tokens": 2048
+                    }
+                    logger.info(f"[图片描述_DEBUG] 请求载荷准备完成")
+
+                    url = f"{target_base_url.rstrip('/')}/chat/completions"
+                    logger.info(f"[图片描述_DEBUG] 请求URL: {url}")
+
+                    temp_client = httpx.AsyncClient(verify=target_verify_ssl, timeout=timeout_config)
+                    try:
+                        logger.info(f"[图片描述_DEBUG] 发送HTTP请求...")
+                        response = await temp_client.post(url, json=payload, headers=headers, timeout=timeout_config)
+                        logger.info(f"[图片描述_DEBUG] 收到响应, status_code: {response.status_code}")
+                        if response.status_code == 200:
+                            resp_json = response.json()
+                            logger.info(f"[图片描述_DEBUG] 响应JSON解析成功")
+                            description = resp_json["choices"][0]["message"]["content"].strip()
+                            self._image_description_cache[image_url] = {
+                                "description": description,
+                                "timestamp": time.time()
+                            }
+                            self._save_image_cache()
+                            logger.info(f"[图片描述] 描述成功: {description[:100]}...")
+                            return description
+                        else:
+                            logger.warning(f"[图片描述] 请求失败: {response.status_code} - {response.text[:200]}")
+                            last_error = f"HTTP {response.status_code}"
+                    finally:
+                        await temp_client.aclose()
+
+                except Exception as e:
+                    logger.error(f"[图片描述] 异常: {str(e)}")
+                    logger.error(f"[图片描述_DEBUG] 完整堆栈跟踪:\n{traceback.format_exc()}")
+                    last_error = str(e)
+                    continue
+
+            logger.error(f"[图片描述] 所有模型都失败了: {last_error}")
+            return f"[图片: {image_url}]"
+        except Exception as e:
+            logger.error(f"[图片描述] 致命错误: {str(e)}")
+            logger.error(f"[图片描述_DEBUG] 致命错误完整堆栈跟踪:\n{traceback.format_exc()}")
+            return f"[图片: {image_url}]"
 
     async def _process_messages_with_images(self, messages: List[Dict[str, Any]], preserve_original: bool = True) -> List[Dict[str, Any]]:
         """
         Process messages: if they contain images, describe them and create a cleaned version.
         If preserve_original is True, keeps the original images in a structured way for tool calls.
         """
+        logger.info(f"[图片处理_DEBUG] _process_messages_with_images 开始执行, 消息数量: {len(messages)}, preserve_original: {preserve_original}")
         processed_messages = []
         
-        for msg in messages:
+        for msg_idx, msg in enumerate(messages):
+            logger.info(f"[图片处理_DEBUG] 处理第 {msg_idx+1} 条消息")
             content = msg.get("content")
+            logger.info(f"[图片处理_DEBUG] 消息内容类型: {type(content)}")
             image_urls = self._extract_image_urls(content)
+            logger.info(f"[图片处理_DEBUG] 提取到 {len(image_urls)} 张图片")
             
             if not image_urls:
+                logger.info(f"[图片处理_DEBUG] 无图片，直接复制消息")
                 processed_messages.append(msg.copy())
                 continue
 
             new_msg = msg.copy()
             
             if isinstance(content, list):
+                logger.info(f"[图片处理_DEBUG] content是list类型，开始处理")
                 text_parts = []
                 image_parts = []
                 
-                for item in content:
+                for item_idx, item in enumerate(content):
+                    logger.info(f"[图片处理_DEBUG] 处理第 {item_idx+1} 个content项: {type(item)}")
                     if isinstance(item, dict):
                         if item.get("type") == "text":
                             text_parts.append(item.get("text", ""))
+                            logger.info(f"[图片处理_DEBUG] 文本项已添加")
                         elif item.get("type") in ["image_url", "image"]:
                             image_parts.append(item)
+                            logger.info(f"[图片处理_DEBUG] 图片项已添加")
+                
+                logger.info(f"[图片处理_DEBUG] 文本部分: {text_parts}, 图片部分数量: {len(image_parts)}")
                 
                 descriptions = []
-                for img_item in image_parts:
+                for img_idx, img_item in enumerate(image_parts):
+                    logger.info(f"[图片处理_DEBUG] 描述第 {img_idx+1} 张图片")
                     img_url = None
                     if "image_url" in img_item:
                         img_url = img_item["image_url"].get("url", "")
@@ -414,12 +446,20 @@ class RouterEngine:
                         img_url = img_item.get("url", "")
                     
                     if img_url:
-                        desc = await self._describe_image(img_url)
-                        descriptions.append((img_url, desc))
+                        try:
+                            logger.info(f"[图片处理_DEBUG] 调用 _describe_image 处理URL: {img_url[:100]}")
+                            desc = await self._describe_image(img_url)
+                            descriptions.append((img_url, desc))
+                            logger.info(f"[图片处理_DEBUG] 图片描述成功")
+                        except Exception as e:
+                            logger.error(f"[图片处理] 描述图片失败: {str(e)}")
+                            logger.error(f"[图片处理_DEBUG] 描述图片完整堆栈跟踪:\n{traceback.format_exc()}")
+                            descriptions.append((img_url, f"[图片: {img_url}]"))
                 
                 new_text = "\n".join(text_parts)
                 for img_url, desc in descriptions:
                     new_text += f"\n\n[图片描述: {desc}]"
+                logger.info(f"[图片处理_DEBUG] 新文本内容: {new_text[:200]}...")
                 
                 if preserve_original:
                     new_content = [{"type": "text", "text": new_text}]
@@ -429,11 +469,21 @@ class RouterEngine:
                             "image_url": {"url": img_url}
                         })
                     new_msg["content"] = new_content
+                    logger.info(f"[图片处理_DEBUG] preserve_original=True，保留原始图片")
                 else:
                     new_msg["content"] = new_text
+                    logger.info(f"[图片处理_DEBUG] preserve_original=False，仅保留文本")
+            elif isinstance(content, str):
+                new_msg["content"] = content
+                logger.info(f"[图片处理_DEBUG] content是str类型")
+            else:
+                new_msg["content"] = content
+                logger.info(f"[图片处理_DEBUG] content是其他类型: {type(content)}")
             
             processed_messages.append(new_msg)
+            logger.info(f"[图片处理_DEBUG] 第 {msg_idx+1} 条消息处理完成")
         
+        logger.info(f"[图片处理_DEBUG] _process_messages_with_images 执行完成，返回 {len(processed_messages)} 条消息")
         return processed_messages
 
     def _get_model_stats(self, model_id: str) -> Dict[str, Any]:
@@ -1164,76 +1214,87 @@ class RouterEngine:
                         logger.info(f"     提供商URL: {target_base_url}")
                         logger.info("  " + "─" * 56)
                         
+                        logger.info(f"  [图片处理_DEBUG] 开始检查图片内容...")
                         has_images = self._has_image_content(request.messages)
                         model_multimodal = normalized.get("multimodal", True)
+                        logger.info(f"  [图片处理_DEBUG] has_images: {has_images}, model_multimodal: {model_multimodal}")
                         
                         processed_request = request
                         log_messages = request.messages
                         if has_images:
-                            if not model_multimodal:
-                                logger.info(f"  [图片处理] 检测到图片内容，但模型不支持多模态。开始图片转述...")
-                                image_start_time = time.time()
-                                add_trace_event("IMAGE_TRANSCRIBE_START", image_start_time, 0, "success", retry_count)
-                                
-                                processed_messages = await self._process_messages_with_images(
-                                    request.messages, 
-                                    preserve_original=False
-                                )
-                                processed_request = ChatCompletionRequest(
-                                    model=request.model,
-                                    messages=processed_messages,
-                                    temperature=request.temperature,
-                                    top_p=request.top_p,
-                                    n=request.n,
-                                    stream=request.stream,
-                                    stop=request.stop,
-                                    max_tokens=request.max_tokens,
-                                    presence_penalty=request.presence_penalty,
-                                    frequency_penalty=request.frequency_penalty,
-                                    logit_bias=request.logit_bias,
-                                    user=request.user,
-                                    tools=request.tools,
-                                    tool_choice=request.tool_choice,
-                                    response_format=request.response_format
-                                )
-                                log_messages = processed_messages
-                                
-                                image_end_time = time.time()
-                                image_duration = (image_end_time - image_start_time) * 1000
-                                add_trace_event("IMAGE_TRANSCRIBE_DONE", image_end_time, image_duration, "success", retry_count)
-                                logger.info(f"  [图片处理] 图片转述完成，准备发送请求")
-                            else:
-                                logger.info(f"  [图片处理] 检测到图片内容，模型支持多模态。先描述图片以缓存，然后保留原始图片...")
-                                image_start_time = time.time()
-                                add_trace_event("IMAGE_CACHE_START", image_start_time, 0, "success", retry_count)
-                                
-                                processed_messages = await self._process_messages_with_images(
-                                    request.messages, 
-                                    preserve_original=True
-                                )
-                                processed_request = ChatCompletionRequest(
-                                    model=request.model,
-                                    messages=processed_messages,
-                                    temperature=request.temperature,
-                                    top_p=request.top_p,
-                                    n=request.n,
-                                    stream=request.stream,
-                                    stop=request.stop,
-                                    max_tokens=request.max_tokens,
-                                    presence_penalty=request.presence_penalty,
-                                    frequency_penalty=request.frequency_penalty,
-                                    logit_bias=request.logit_bias,
-                                    user=request.user,
-                                    tools=request.tools,
-                                    tool_choice=request.tool_choice,
-                                    response_format=request.response_format
-                                )
-                                log_messages = processed_messages
-                                
-                                image_end_time = time.time()
-                                image_duration = (image_end_time - image_start_time) * 1000
-                                add_trace_event("IMAGE_CACHE_DONE", image_end_time, image_duration, "success", retry_count)
-                                logger.info(f"  [图片处理] 图片描述缓存完成，保留原始图片")
+                            try:
+                                if not model_multimodal:
+                                    logger.info(f"  [图片处理] 检测到图片内容，但模型不支持多模态。开始图片转述...")
+                                    image_start_time = time.time()
+                                    add_trace_event("IMAGE_TRANSCRIBE_START", image_start_time, 0, "success", retry_count)
+                                    
+                                    logger.info(f"  [图片处理_DEBUG] 调用 _process_messages_with_images, preserve_original=False")
+                                    processed_messages = await self._process_messages_with_images(
+                                        request.messages, 
+                                        preserve_original=False
+                                    )
+                                    logger.info(f"  [图片处理_DEBUG] _process_messages_with_images 完成，构建新请求")
+                                    processed_request = ChatCompletionRequest(
+                                        model=request.model,
+                                        messages=processed_messages,
+                                        temperature=request.temperature,
+                                        top_p=request.top_p,
+                                        n=request.n,
+                                        stream=request.stream,
+                                        stop=request.stop,
+                                        max_tokens=request.max_tokens,
+                                        presence_penalty=request.presence_penalty,
+                                        frequency_penalty=request.frequency_penalty,
+                                        logit_bias=request.logit_bias,
+                                        user=request.user,
+                                        tools=request.tools,
+                                        tool_choice=request.tool_choice,
+                                        response_format=request.response_format
+                                    )
+                                    log_messages = processed_messages
+                                    
+                                    image_end_time = time.time()
+                                    image_duration = (image_end_time - image_start_time) * 1000
+                                    add_trace_event("IMAGE_TRANSCRIBE_DONE", image_end_time, image_duration, "success", retry_count)
+                                    logger.info(f"  [图片处理] 图片转述完成，准备发送请求")
+                                else:
+                                    logger.info(f"  [图片处理] 检测到图片内容，模型支持多模态。先描述图片以缓存，然后保留原始图片...")
+                                    image_start_time = time.time()
+                                    add_trace_event("IMAGE_CACHE_START", image_start_time, 0, "success", retry_count)
+                                    
+                                    logger.info(f"  [图片处理_DEBUG] 调用 _process_messages_with_images, preserve_original=True")
+                                    processed_messages = await self._process_messages_with_images(
+                                        request.messages, 
+                                        preserve_original=True
+                                    )
+                                    logger.info(f"  [图片处理_DEBUG] _process_messages_with_images 完成，构建新请求")
+                                    processed_request = ChatCompletionRequest(
+                                        model=request.model,
+                                        messages=processed_messages,
+                                        temperature=request.temperature,
+                                        top_p=request.top_p,
+                                        n=request.n,
+                                        stream=request.stream,
+                                        stop=request.stop,
+                                        max_tokens=request.max_tokens,
+                                        presence_penalty=request.presence_penalty,
+                                        frequency_penalty=request.frequency_penalty,
+                                        logit_bias=request.logit_bias,
+                                        user=request.user,
+                                        tools=request.tools,
+                                        tool_choice=request.tool_choice,
+                                        response_format=request.response_format
+                                    )
+                                    log_messages = processed_messages
+                                    
+                                    image_end_time = time.time()
+                                    image_duration = (image_end_time - image_start_time) * 1000
+                                    add_trace_event("IMAGE_CACHE_DONE", image_end_time, image_duration, "success", retry_count)
+                                    logger.info(f"  [图片处理] 图片描述缓存完成，保留原始图片")
+                            except Exception as e:
+                                logger.error(f"  [图片处理] 图片处理流程异常: {str(e)}")
+                                logger.error(f"  [图片处理_DEBUG] 图片处理流程完整堆栈跟踪:\n{traceback.format_exc()}")
+                                logger.warning(f"  [图片处理] 图片处理失败，将使用原始请求继续尝试")
                         
                         response_data = await self._call_upstream(processed_request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
                         
