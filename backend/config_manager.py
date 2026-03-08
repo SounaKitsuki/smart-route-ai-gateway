@@ -98,6 +98,12 @@ class RouterModelConfig(BaseModel):
 4. If it's simple chat, IT IS T1.
 5. Respond ONLY with the label: "T1", "T2", or "T3"."""
 
+class AdaptiveWeightsConfig(BaseModel):
+    weight_random: float = 0.3
+    weight_health: float = 0.1
+    weight_speed: float = 0.3
+    weight_user: float = 0.2
+
 class HealthCheckConfig(BaseModel):
     decay_rate: float = 0.05 # Recovery points per minute
 
@@ -139,6 +145,7 @@ class AppConfig(BaseModel):
     providers: ProvidersConfig = ProvidersConfig()
     router: RouterModelConfig = RouterModelConfig()
     health: HealthCheckConfig = HealthCheckConfig()
+    adaptive_weights: AdaptiveWeightsConfig = AdaptiveWeightsConfig()
     params: ParameterConfig = ParameterConfig()
 
     # Compatibility Properties (Read-Only helpers for code migration)

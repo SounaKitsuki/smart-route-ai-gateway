@@ -105,6 +105,13 @@ export interface SecurityConfig {
   access_token_expire_minutes?: number;
 }
 
+export interface AdaptiveWeightsConfig {
+  weight_random: number;
+  weight_health: number;
+  weight_speed: number;
+  weight_user: number;
+}
+
 export interface AppConfig {
   general: GeneralConfig;
   models: ModelsConfig;
@@ -113,6 +120,7 @@ export interface AppConfig {
   providers: ProvidersConfig;
   router: RouterConfig;
   health: HealthCheckConfig;
+  adaptive_weights: AdaptiveWeightsConfig;
   params: ParameterConfig;
   security?: SecurityConfig;
 }

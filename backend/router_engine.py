@@ -682,17 +682,20 @@ class RouterEngine:
             return shuffled
             
         if strategy == "adaptive":
+            config = config_manager.get_config()
+            weights = config.adaptive_weights
+            
             logger.info("🧠 使用自适应策略，计算各模型权重（随机数 + 健康度 + 响应时间 + 用户权重）...")
-            logger.info("📊 权重占比: 随机数 0.3 | 健康值 0.1 | 响应速度 0.3 | 用户加权 0.2")
+            logger.info(f"📊 权重占比: 随机数 {weights.weight_random} | 健康值 {weights.weight_health} | 响应速度 {weights.weight_speed} | 用户加权 {weights.weight_user}")
             
             scored_models = []
             max_response_time_threshold = 30000.0
             
             # 权重配置
-            WEIGHT_RANDOM = 0.3
-            WEIGHT_HEALTH = 0.1
-            WEIGHT_SPEED = 0.3
-            WEIGHT_USER = 0.2
+            WEIGHT_RANDOM = weights.weight_random
+            WEIGHT_HEALTH = weights.weight_health
+            WEIGHT_SPEED = weights.weight_speed
+            WEIGHT_USER = weights.weight_user
             
             for m in models:
                 model_id = self._extract_model_id(m)

@@ -1014,6 +1014,91 @@ function ResilienceSettings({ config, setConfig }: { config: AppConfig, setConfi
                     </div>
                 </CardContent>
             </Card>
+
+            <Card>
+                <CardHeader>
+                    <CardTitle>自适应策略权重</CardTitle>
+                    <CardDescription>配置自适应模型排序各维度的权重占比</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label>随机数权重</Label>
+                                <span className="text-sm font-mono">{config.adaptive_weights?.weight_random ?? 0.3}</span>
+                            </div>
+                            <Slider 
+                                value={[config.adaptive_weights?.weight_random ?? 0.3]} 
+                                min={0} max={1} step={0.01}
+                                onValueChange={(val) => setConfig({
+                                    ...config,
+                                    adaptive_weights: {
+                                        ...config.adaptive_weights,
+                                        weight_random: val[0]
+                                    }
+                                })}
+                            />
+                        </div>
+                        
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label>健康值权重</Label>
+                                <span className="text-sm font-mono">{config.adaptive_weights?.weight_health ?? 0.1}</span>
+                            </div>
+                            <Slider 
+                                value={[config.adaptive_weights?.weight_health ?? 0.1]} 
+                                min={0} max={1} step={0.01}
+                                onValueChange={(val) => setConfig({
+                                    ...config,
+                                    adaptive_weights: {
+                                        ...config.adaptive_weights,
+                                        weight_health: val[0]
+                                    }
+                                })}
+                            />
+                        </div>
+                        
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label>响应速度权重</Label>
+                                <span className="text-sm font-mono">{config.adaptive_weights?.weight_speed ?? 0.3}</span>
+                            </div>
+                            <Slider 
+                                value={[config.adaptive_weights?.weight_speed ?? 0.3]} 
+                                min={0} max={1} step={0.01}
+                                onValueChange={(val) => setConfig({
+                                    ...config,
+                                    adaptive_weights: {
+                                        ...config.adaptive_weights,
+                                        weight_speed: val[0]
+                                    }
+                                })}
+                            />
+                        </div>
+                        
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label>用户配置权重</Label>
+                                <span className="text-sm font-mono">{config.adaptive_weights?.weight_user ?? 0.2}</span>
+                            </div>
+                            <Slider 
+                                value={[config.adaptive_weights?.weight_user ?? 0.2]} 
+                                min={0} max={1} step={0.01}
+                                onValueChange={(val) => setConfig({
+                                    ...config,
+                                    adaptive_weights: {
+                                        ...config.adaptive_weights,
+                                        weight_user: val[0]
+                                    }
+                                })}
+                            />
+                        </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                        调整各维度的权重占比，总权重不强制归一化，系统会按比例计算最终得分。
+                    </p>
+                </CardContent>
+            </Card>
         </div>
     )
 }
