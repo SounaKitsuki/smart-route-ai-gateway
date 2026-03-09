@@ -1172,6 +1172,29 @@ class RouterEngine:
              logger.info(f"Models reordered by strategy '{strategy}' for level {level}: {sorted_models}")
         models = sorted_models
 
+        has_images = self._has_image_content(request.messages)
+        transcribed_messages = None
+        image_cached = False
+        
+        if has_images and strategy != "sequential":
+            logger.info("")
+            logger.info("=" * 60)
+            logger.info("[图片策略分析] 自适应模式 - 分析模型列表")
+            logger.info("=" * 60)
+            
+            for idx, model_item in enumerate(models[:max_attempts]):
+                normalized = self._normalize_model_entry(model_item)
+                model_name = normalized["model"]
+                provider_id = normalized["provider"]
+                is_multimodal = normalized.get("multimodal", True)
+                
+                logger.info(f"  {idx + 1}. [{provider_id}] {model_name} | 多模态: {is_multimodal}")
+            
+            logger.info("  📌 策略: 前几个多模态模型直接使用原始图片")
+            logger.info("  📌 遇到第一个非多模态模型时才转述图片并缓存")
+            logger.info("  📌 后续所有模型都使用缓存的转述内容")
+            logger.info("=" * 60)
+
         last_error = None
         last_stack_trace = None
         user_prompt = self._extract_text_from_content(request.messages[-1].get("content")) if request.messages else ""
@@ -1602,8 +1625,32 @@ class RouterEngine:
                     processed_request = request
                     log_messages = request.messages
                     if has_images:
-                        if not model_multimodal:
-                            logger.info(f"  [图片处理] 检测到图片内容，但模型不支持多模态。开始图片转述...")
+                        if image_cached and transcribed_messages is not None:
+                            logger.info(f"  [图片处理] 使用缓存的转述内容")
+                            processed_request = ChatCompletionRequest(
+                                model=request.model,
+                                messages=transcribed_messages,
+                                temperature=request.temperature,
+                                top_p=request.top_p,
+                                n=request.n,
+                                stream=request.stream,
+                                stop=request.stop,
+                                max_tokens=request.max_tokens,
+                                presence_penalty=request.presence_penalty,
+                                frequency_penalty=request.frequency_penalty,
+                                logit_bias=request.logit_bias,
+                                user=request.user,
+                                tools=request.tools,
+                                tool_choice=request.tool_choice,
+                                response_format=request.response_format
+                            )
+                            log_messages = transcribed_messages
+                        elif model_multimodal:
+                            logger.info(f"  [图片处理] 模型支持多模态，直接使用原始图片")
+                            processed_request = request
+                            log_messages = request.messages
+                        else:
+                            logger.info(f"  [图片处理] 模型不支持多模态，开始图片转述并缓存...")
                             image_start_time = time.time()
                             add_trace_event("IMAGE_TRANSCRIBE_START", image_start_time, 0, "success", retry_count)
                             
@@ -1611,6 +1658,9 @@ class RouterEngine:
                                 request.messages, 
                                 preserve_original=False
                             )
+                            transcribed_messages = processed_messages
+                            image_cached = True
+                            
                             processed_request = ChatCompletionRequest(
                                 model=request.model,
                                 messages=processed_messages,
@@ -1633,39 +1683,7 @@ class RouterEngine:
                             image_end_time = time.time()
                             image_duration = (image_end_time - image_start_time) * 1000
                             add_trace_event("IMAGE_TRANSCRIBE_DONE", image_end_time, image_duration, "success", retry_count)
-                            logger.info(f"  [图片处理] 图片转述完成，准备发送请求")
-                        else:
-                            logger.info(f"  [图片处理] 检测到图片内容，模型支持多模态。先描述图片以缓存，然后保留原始图片...")
-                            image_start_time = time.time()
-                            add_trace_event("IMAGE_CACHE_START", image_start_time, 0, "success", retry_count)
-                            
-                            processed_messages = await self._process_messages_with_images(
-                                request.messages, 
-                                preserve_original=True
-                            )
-                            processed_request = ChatCompletionRequest(
-                                model=request.model,
-                                messages=processed_messages,
-                                temperature=request.temperature,
-                                top_p=request.top_p,
-                                n=request.n,
-                                stream=request.stream,
-                                stop=request.stop,
-                                max_tokens=request.max_tokens,
-                                presence_penalty=request.presence_penalty,
-                                frequency_penalty=request.frequency_penalty,
-                                logit_bias=request.logit_bias,
-                                user=request.user,
-                                tools=request.tools,
-                                tool_choice=request.tool_choice,
-                                response_format=request.response_format
-                            )
-                            log_messages = processed_messages
-                            
-                            image_end_time = time.time()
-                            image_duration = (image_end_time - image_start_time) * 1000
-                            add_trace_event("IMAGE_CACHE_DONE", image_end_time, image_duration, "success", retry_count)
-                            logger.info(f"  [图片处理] 图片描述缓存完成，保留原始图片")
+                            logger.info(f"  [图片处理] 图片转述完成并缓存，后续模型将使用缓存内容")
                     
                     response_data = await self._call_upstream(processed_request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
                     
