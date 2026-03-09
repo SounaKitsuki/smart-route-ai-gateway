@@ -15,11 +15,31 @@ import json
 import os
 
 from config_manager import config_manager, AppConfig
-from database import init_db, get_db, RequestLog, AsyncSession, prune_logs, DailyStats, migrate_historical_stats
+from database import init_db, get_db, RequestLog, AsyncSession, prune_logs, DailyStats, migrate_historical_stats, recalculate_daily_stats, get_local_date_str
 from router_engine import router_engine, ChatCompletionRequest
 from logger import trace_logger
+import asyncio
 
 logger = logging.getLogger("main")
+
+# Background task for daily stats refresh
+daily_stats_task = None
+
+async def daily_stats_refresh_task():
+    while True:
+        now = datetime.now()
+        tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        wait_seconds = (tomorrow - now).total_seconds()
+        
+        logger.info(f"[Daily Stats] Next refresh at {tomorrow.strftime('%Y-%m-%d %H:%M:%S')}, waiting {wait_seconds:.0f}s")
+        await asyncio.sleep(wait_seconds)
+        
+        logger.info("[Daily Stats] Refreshing daily statistics...")
+        try:
+            await recalculate_daily_stats()
+            logger.info("[Daily Stats] Daily statistics refreshed successfully")
+        except Exception as e:
+            logger.error(f"[Daily Stats] Failed to refresh stats: {e}")
 
 # Security
 security = HTTPBearer(auto_error=False)
@@ -49,12 +69,24 @@ async def verify_gateway_key(credentials: HTTPAuthorizationCredentials = Securit
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global daily_stats_task
+    
     # Startup logic
     await init_db()
-    # Migrate historical stats from request_logs to daily_stats
-    await migrate_historical_stats()
+    # Recalculate today's stats on startup to ensure accuracy
+    logger.info("[Startup] Recalculating today's statistics...")
+    try:
+        await recalculate_daily_stats()
+        logger.info("[Startup] Today's statistics recalculated successfully")
+    except Exception as e:
+        logger.error(f"[Startup] Failed to recalculate stats: {e}")
+    
     # Initialize Router Engine (HTTP Client)
     await router_engine.startup()
+    
+    # Start daily stats refresh task
+    daily_stats_task = asyncio.create_task(daily_stats_refresh_task())
+    logger.info("[Startup] Daily stats refresh task started")
     
     # Prune logs on startup based on config
     try:
@@ -64,8 +96,16 @@ async def lifespan(app: FastAPI):
         print(f"[INFO] Pruned logs older than {days} days on startup.")
     except Exception as e:
         print(f"[ERROR] Failed to prune logs on startup: {e}")
+    
     yield
+    
     # Shutdown logic
+    if daily_stats_task:
+        daily_stats_task.cancel()
+        try:
+            await daily_stats_task
+        except asyncio.CancelledError:
+            logger.info("[Shutdown] Daily stats refresh task cancelled")
     await router_engine.shutdown()
 
 app = FastAPI(title="SmartRoute AI Gateway", lifespan=lifespan)
@@ -580,7 +620,7 @@ async def export_logs(
 
 @app.get("/api/stats", dependencies=[Depends(get_current_active_user)])
 async def get_stats(range: str = Query("today", pattern="^(today|3days|all)$"), db: AsyncSession = Depends(get_db)):
-    now = datetime.utcnow()
+    now = datetime.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     
     start_date_str = None
