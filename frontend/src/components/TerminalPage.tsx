@@ -47,6 +47,11 @@ export function TerminalPage() {
     return now.toLocaleTimeString('zh-CN', { hour12: false });
   };
 
+  const parseLogTime = (msg: string): string | null => {
+    const match = msg.match(/^\[(\d{2}:\d{2}:\d{2})\.\d{3}\]/);
+    return match ? match[1] : null;
+  };
+
   const isPausedRef = useRef(isPaused);
   useEffect(() => {
     isPausedRef.current = isPaused;
@@ -114,7 +119,7 @@ export function TerminalPage() {
         }
 
         const level = parseLogLevel(msg);
-        const time = formatTime();
+        const time = parseLogTime(msg) || formatTime();
 
         const entry: LogEntry = {
           id: logIdRef.current++,
