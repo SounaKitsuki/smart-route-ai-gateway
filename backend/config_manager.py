@@ -103,6 +103,8 @@ class AdaptiveWeightsConfig(BaseModel):
     weight_health: float = 0.1
     weight_speed: float = 0.3
     weight_user: float = 0.2
+    weight_consecutive_penalty: float = 0.3  # 连续使用惩罚权重
+    consecutive_history_size: int = 3  # 连续使用历史记录大小
 
 class HealthCheckConfig(BaseModel):
     decay_rate: float = 0.05 # Recovery points per minute

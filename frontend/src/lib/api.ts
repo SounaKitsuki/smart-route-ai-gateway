@@ -110,6 +110,8 @@ export interface AdaptiveWeightsConfig {
   weight_health: number;
   weight_speed: number;
   weight_user: number;
+  weight_consecutive_penalty: number;
+  consecutive_history_size: number;
 }
 
 export interface AppConfig {

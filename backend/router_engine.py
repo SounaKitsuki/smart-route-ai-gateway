@@ -71,7 +71,7 @@ class RouterEngine:
     _image_cache_file: str = "image_description_cache.json"
     _model_usage_history: Dict[str, List[float]] = {} # { "model_id": [timestamp1, timestamp2, ...] } - 滑动窗口记录模型使用时间
     _USAGE_WINDOW_SECONDS: float = 60.0 # 追踪最近60秒内的使用情况
-    _last_selected_model: Optional[str] = None # 记录上一次选中的模型
+    _consecutive_model_history: List[str] = [] # 记录最近的模型使用历史（用于连续惩罚计算）
     
     def _normalize_model_entry(self, item: Any) -> Dict[str, Any]:
         """Normalize any model entry to a consistent dictionary format with 'model' and 'provider' fields."""
@@ -265,7 +265,15 @@ class RouterEngine:
         if model_id not in self._model_usage_history:
             self._model_usage_history[model_id] = []
         self._model_usage_history[model_id].append(now)
-        self._last_selected_model = model_id
+        
+        # 记录到连续使用历史
+        config = config_manager.get_config()
+        history_size = config.adaptive_weights.consecutive_history_size
+        self._consecutive_model_history.append(model_id)
+        # 保持历史记录大小
+        if len(self._consecutive_model_history) > history_size:
+            self._consecutive_model_history = self._consecutive_model_history[-history_size:]
+        
         self._cleanup_model_usage_history()
     
     def _get_model_usage_count(self, model_id: str) -> int:
@@ -711,15 +719,25 @@ class RouterEngine:
                 model_id = self._extract_model_id(m)
                 usage_count = all_usage_counts.get(model_id, 0)
                 
-                # 权重公式：使用次数越少，权重越高
-                # 避免连续使用同一模型
-                if self._last_selected_model == model_id:
-                    weight = 0.1
+                # 基础权重：使用次数越少，权重越高
+                if max_usage > 0:
+                    weight = 1.0 + (max_usage - usage_count)
                 else:
-                    if max_usage > 0:
-                        weight = 1.0 + (max_usage - usage_count)
-                    else:
-                        weight = 1.0
+                    weight = 1.0
+                
+                # 避免连续使用同一模型 - 基于历史记录计算权重
+                config = config_manager.get_config()
+                consecutive_weight = config.adaptive_weights.weight_consecutive_penalty
+                
+                if model_id in self._consecutive_model_history:
+                    # 计算模型在历史记录中的出现次数
+                    occurrence_count = self._consecutive_model_history.count(model_id)
+                    history_size = len(self._consecutive_model_history)
+                    
+                    if history_size > 0:
+                        # 基于出现频率和配置权重降低权重
+                        penalty_factor = (occurrence_count / history_size) * consecutive_weight
+                        weight *= (1.0 - penalty_factor)
                 
                 weighted_models.append((weight, m))
                 
@@ -810,10 +828,19 @@ class RouterEngine:
                 else:
                     balance_factor = 1.0
                 
-                # 6. 避免连续使用同一模型 - 如果是上一次使用的模型，额外惩罚
+                # 6. 避免连续使用同一模型 - 基于历史记录计算惩罚
                 consecutive_penalty = 0.0
-                if self._last_selected_model == model_id:
-                    consecutive_penalty = 0.3
+                consecutive_weight = weights.weight_consecutive_penalty
+                
+                if model_id in self._consecutive_model_history:
+                    # 计算模型在历史记录中的出现次数
+                    occurrence_count = self._consecutive_model_history.count(model_id)
+                    history_size = len(self._consecutive_model_history)
+                    
+                    if history_size > 0:
+                        # 惩罚强度基于出现频率
+                        penalty_factor = (occurrence_count / history_size) * consecutive_weight
+                        consecutive_penalty = penalty_factor
                 
                 # 加权求和
                 base_score = (

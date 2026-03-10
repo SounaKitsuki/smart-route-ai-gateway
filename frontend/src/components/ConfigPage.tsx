@@ -1159,6 +1159,46 @@ function ResilienceSettings({ config, setConfig }: { config: AppConfig, setConfi
                                 })}
                             />
                         </div>
+                        
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                                <Label>连续使用惩罚权重</Label>
+                                <span className="text-sm font-mono">{config.adaptive_weights?.weight_consecutive_penalty ?? 0.3}</span>
+                            </div>
+                            <Slider 
+                                value={[config.adaptive_weights?.weight_consecutive_penalty ?? 0.3]} 
+                                min={0} max={1} step={0.01}
+                                onValueChange={(val) => setConfig({
+                                    ...config,
+                                    adaptive_weights: {
+                                        ...config.adaptive_weights,
+                                        weight_consecutive_penalty: val[0]
+                                    }
+                                })}
+                            />
+                        </div>
+                        
+                        <div className="space-y-2">
+                            <Label>连续使用历史记录大小</Label>
+                            <div className="flex items-center gap-4">
+                                <Input 
+                                    type="number"
+                                    min="1"
+                                    max="10"
+                                    value={config.adaptive_weights?.consecutive_history_size ?? 3}
+                                    onChange={(e) => setConfig({
+                                        ...config,
+                                        adaptive_weights: {
+                                            ...config.adaptive_weights,
+                                            consecutive_history_size: parseInt(e.target.value) || 3
+                                        }
+                                    })}
+                                    className="w-32"
+                                />
+                                <span className="text-sm text-muted-foreground">个历史记录</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">设置用于计算连续惩罚的历史记录长度。</p>
+                        </div>
                     </div>
                     <p className="text-xs text-muted-foreground">
                         调整各维度的权重占比，总权重不强制归一化，系统会按比例计算最终得分。
