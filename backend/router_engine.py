@@ -69,6 +69,9 @@ class RouterEngine:
     _tokenizer = None
     _image_description_cache: Dict[str, Dict[str, Any]] = {} # { "image_url_or_path": { "description": "...", "timestamp": 1234567890 } }
     _image_cache_file: str = "image_description_cache.json"
+    _model_usage_history: Dict[str, List[float]] = {} # { "model_id": [timestamp1, timestamp2, ...] } - 滑动窗口记录模型使用时间
+    _USAGE_WINDOW_SECONDS: float = 60.0 # 追踪最近60秒内的使用情况
+    _last_selected_model: Optional[str] = None # 记录上一次选中的模型
     
     def _normalize_model_entry(self, item: Any) -> Dict[str, Any]:
         """Normalize any model entry to a consistent dictionary format with 'model' and 'provider' fields."""
@@ -242,6 +245,33 @@ class RouterEngine:
                 del self._image_description_cache[key]
             logger.info(f"[图片描述] 清理了 {len(expired_keys)} 个过期缓存")
             self._save_image_cache()
+    
+    def _cleanup_model_usage_history(self):
+        """清理过期的模型使用历史（滑动窗口）"""
+        now = time.time()
+        cutoff = now - self._USAGE_WINDOW_SECONDS
+        
+        for model_id in list(self._model_usage_history.keys()):
+            self._model_usage_history[model_id] = [
+                ts for ts in self._model_usage_history[model_id]
+                if ts > cutoff
+            ]
+            if not self._model_usage_history[model_id]:
+                del self._model_usage_history[model_id]
+    
+    def _record_model_usage(self, model_id: str):
+        """记录模型使用时间"""
+        now = time.time()
+        if model_id not in self._model_usage_history:
+            self._model_usage_history[model_id] = []
+        self._model_usage_history[model_id].append(now)
+        self._last_selected_model = model_id
+        self._cleanup_model_usage_history()
+    
+    def _get_model_usage_count(self, model_id: str) -> int:
+        """获取模型在滑动窗口内的使用次数"""
+        self._cleanup_model_usage_history()
+        return len(self._model_usage_history.get(model_id, []))
 
     def _load_stats(self):
         if os.path.exists(self._stats_file):
@@ -669,22 +699,65 @@ class RouterEngine:
             return models
             
         if strategy == "random":
-            # Pure random shuffle
-            shuffled = list(models)
-            random.shuffle(shuffled)
-            logger.info("🎲 使用随机策略，已打乱顺序:")
-            for idx, m in enumerate(shuffled):
+            logger.info("🎲 使用加权随机策略（基于使用次数负载均衡）...")
+            
+            # 计算每个模型的权重（使用次数少的权重高）
+            self._cleanup_model_usage_history()
+            all_usage_counts = {self._extract_model_id(m): self._get_model_usage_count(self._extract_model_id(m)) for m in models}
+            max_usage = max(all_usage_counts.values()) if all_usage_counts else 1
+            
+            weighted_models = []
+            for m in models:
+                model_id = self._extract_model_id(m)
+                usage_count = all_usage_counts.get(model_id, 0)
+                
+                # 权重公式：使用次数越少，权重越高
+                # 避免连续使用同一模型
+                if self._last_selected_model == model_id:
+                    weight = 0.1
+                else:
+                    if max_usage > 0:
+                        weight = 1.0 + (max_usage - usage_count)
+                    else:
+                        weight = 1.0
+                
+                weighted_models.append((weight, m))
+                
                 normalized = self._normalize_model_entry(m)
                 provider_tag = f"[{normalized['provider']}]"
-                logger.info(f"  {idx + 1}. {provider_tag} {normalized['model']}")
+                logger.info(f"  {provider_tag} {normalized['model']} | 使用次数: {usage_count} | 权重: {weight:.2f}")
+            
+            # 加权随机选择
+            sorted_result = []
+            remaining = weighted_models.copy()
+            
+            while remaining:
+                total_weight = sum(w for w, _ in remaining)
+                r = random.uniform(0, total_weight)
+                
+                cumulative = 0.0
+                for i, (w, m) in enumerate(remaining):
+                    cumulative += w
+                    if r <= cumulative:
+                        sorted_result.append(m)
+                        del remaining[i]
+                        break
+            
+            logger.info("-" * 60)
+            logger.info("✅ 加权随机排序完成，最终尝试顺序:")
+            for idx, m in enumerate(sorted_result):
+                normalized = self._normalize_model_entry(m)
+                provider_tag = f"[{normalized['provider']}]"
+                prefix = "➜" if idx == 0 else "  "
+                logger.info(f"  {prefix} {idx + 1}. {provider_tag} {normalized['model']}")
             logger.info("=" * 60)
-            return shuffled
+            return sorted_result
             
         if strategy == "adaptive":
             config = config_manager.get_config()
             weights = config.adaptive_weights
             
-            logger.info("🧠 使用自适应策略，计算各模型权重（随机数 + 健康度 + 响应时间 + 用户权重）...")
+            logger.info("🧠 使用自适应策略，计算各模型权重（随机数 + 健康度 + 响应时间 + 用户权重 + 负载均衡）...")
             logger.info(f"📊 权重占比: 随机数 {weights.weight_random} | 健康值 {weights.weight_health} | 响应速度 {weights.weight_speed} | 用户加权 {weights.weight_user}")
             
             scored_models = []
@@ -695,6 +768,12 @@ class RouterEngine:
             WEIGHT_HEALTH = weights.weight_health
             WEIGHT_SPEED = weights.weight_speed
             WEIGHT_USER = weights.weight_user
+            WEIGHT_BALANCE = 1.5  # 负载均衡权重
+            
+            # 获取所有模型的使用统计
+            self._cleanup_model_usage_history()
+            all_usage_counts = {self._extract_model_id(m): self._get_model_usage_count(self._extract_model_id(m)) for m in models}
+            max_usage = max(all_usage_counts.values()) if all_usage_counts else 1
             
             for m in models:
                 model_id = self._extract_model_id(m)
@@ -715,33 +794,45 @@ class RouterEngine:
                 # 3. 响应速度因子 - 归一化到 [0, 1]
                 avg_response_time = stats.get("avg_response_time", 0.0)
                 if avg_response_time > 0:
-                    # 简单但有效的线性转换
-                    # 0ms → 1.0, 30000ms → 0.0
                     normalized_time = min(avg_response_time / max_response_time_threshold, 1.0)
                     speed_factor = 1.0 - normalized_time
                 else:
-                    # 无历史数据：给予较高默认值（0.8），鼓励尝试新模型
                     speed_factor = 0.8
                 
                 # 4. 用户权重 - 归一化到 [0, 1]
                 user_weight = normalized.get("weight", 0.5)
                 user_weight = max(0.0, min(1.0, user_weight))
                 
+                # 5. 负载均衡因子 - 根据使用次数惩罚
+                usage_count = self._get_model_usage_count(model_id)
+                if max_usage > 0:
+                    balance_factor = 1.0 - (usage_count / max_usage) * 0.7
+                else:
+                    balance_factor = 1.0
+                
+                # 6. 避免连续使用同一模型 - 如果是上一次使用的模型，额外惩罚
+                consecutive_penalty = 0.0
+                if self._last_selected_model == model_id:
+                    consecutive_penalty = 0.3
+                
                 # 加权求和
-                score = (
+                base_score = (
                     random_factor * WEIGHT_RANDOM +
                     health_factor * WEIGHT_HEALTH +
                     speed_factor * WEIGHT_SPEED +
                     user_weight * WEIGHT_USER
                 )
                 
+                # 应用负载均衡和连续惩罚
+                score = (base_score * balance_factor) - consecutive_penalty
+                
                 status_icon = "🔴" if cooldown_active else "🟢"
                 logger.info(
                     f"  {status_icon} {provider_tag} {normalized['model']} | "
                     f"健康度: {health_score}% | 响应时间: {avg_response_time:.0f}ms | "
-                    f"随机: {random_factor:.3f} | 健康: {health_factor:.3f} | "
-                    f"速度: {speed_factor:.3f} | 用户权重: {user_weight:.3f} | "
-                    f"最终得分: {score:.4f}"
+                    f"使用次数: {usage_count} | 随机: {random_factor:.3f} | 健康: {health_factor:.3f} | "
+                    f"速度: {speed_factor:.3f} | 用户权重: {user_weight:.3f} | 均衡: {balance_factor:.3f} | "
+                    f"连续惩罚: {consecutive_penalty:.3f} | 最终得分: {score:.4f}"
                 )
                 scored_models.append((score, m))
             
@@ -1388,6 +1479,7 @@ class RouterEngine:
                         response_data = await self._call_upstream(processed_request, target_model_id, target_base_url, target_api_key, timeout_ms, stream_timeout_ms, trace_id, retry_count, call_start_time, add_trace_event, protocol=target_protocol, verify_ssl=target_verify_ssl)
                         
                         self._record_success(model_id_for_stats)
+                        self._record_model_usage(model_id_for_stats)
 
                         end_time = time.time()
                         duration = (end_time - start_time) * 1000

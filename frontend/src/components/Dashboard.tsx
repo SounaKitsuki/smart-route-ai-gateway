@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend } from 'recharts';
-import { Activity, AlertTriangle, HeartPulse, Coins, Info, ChevronDown, ChevronUp } from 'lucide-react';
+import { Activity, AlertTriangle, HeartPulse, Coins, Info, ChevronDown, ChevronUp, Clock } from 'lucide-react';
 import { fetchStats, fetchModelStats, Stats } from '@/lib/api';
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,6 +16,7 @@ export function Dashboard() {
   const [isExpanded, setIsExpanded] = useState(false);
   const [timeRange, setTimeRange] = useState<'today' | '3days' | 'all'>('today');
   const [tokenUnit, setTokenUnit] = useState<'k' | 'm'>('k');
+  const [durationUnit, setDurationUnit] = useState<'ms' | 's'>('ms');
 
   const loadData = async () => {
     try {
@@ -96,6 +97,28 @@ export function Dashboard() {
                 {(stats?.request_change_percentage || 0) > 0 ? '+' : ''}{stats?.request_change_percentage || 0}%
               </span>
             </p>
+          </CardContent>
+        </Card>
+        <Card className="group hover:border-cyan-400/50 transition-all duration-300">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground group-hover:text-cyan-500 transition-colors">平均延迟</CardTitle>
+            <Clock className="h-4 w-4 text-muted-foreground group-hover:text-cyan-500 transition-colors" />
+          </CardHeader>
+          <CardContent>
+            <div 
+               className="cursor-pointer select-none touch-none active:scale-95 transition-transform"
+               onClick={() => setDurationUnit(durationUnit === 'ms' ? 's' : 'ms')}
+               title="点击切换单位 (毫秒/秒)"
+            >
+              <div className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-cyan-500 to-teal-400">
+                {stats?.avg_duration 
+                  ? (durationUnit === 'ms' 
+                      ? stats.avg_duration.toFixed(0) + ' ms' 
+                      : (stats.avg_duration / 1000).toFixed(2) + ' s')
+                  : '0 ms'}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">全局平均响应时间</p>
           </CardContent>
         </Card>
         <Card className="group hover:border-rose-400/50 transition-all duration-300">
@@ -220,8 +243,8 @@ export function Dashboard() {
       </Card>
 
       {/* Charts */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <Card className="col-span-1 group hover:border-sky-400/50 transition-all duration-300">
+      <div className="space-y-6">
+        <Card className="group hover:border-sky-400/50 transition-all duration-300">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 group-hover:text-sky-500 transition-colors">
               意图分布
@@ -250,7 +273,7 @@ export function Dashboard() {
             </ResponsiveContainer>
           </CardContent>
         </Card>
-        <Card className="col-span-1 group hover:border-sky-400/50 transition-all duration-300">
+        <Card className="group hover:border-sky-400/50 transition-all duration-300">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 group-hover:text-sky-500 transition-colors">
               模型请求量分布
@@ -259,8 +282,8 @@ export function Dashboard() {
           <CardContent className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={stats?.model_distribution} layout="vertical" margin={{ left: 20, right: 20 }}>
-                <XAxis type="number" tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val} />
-                <YAxis type="category" dataKey="model" width={120} tick={{fontSize: 12}} />
+                <XAxis type="number" tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val} width={50} />
+                <YAxis type="category" dataKey="model" width={200} tick={{fontSize: 12}} />
                 <Tooltip 
                   formatter={(value: any) => [value, '请求量']}
                   labelFormatter={(label) => `模型: ${label}`}
