@@ -735,8 +735,19 @@ class RouterEngine:
                     history_size = len(self._consecutive_model_history)
                     
                     if history_size > 0:
-                        # 基于出现频率和配置权重降低权重
-                        penalty_factor = (occurrence_count / history_size) * consecutive_weight
+                        # 检查是否是最近使用的模型（如果是，加重惩罚）
+                        is_recent = len(self._consecutive_model_history) &gt; 0 and self._consecutive_model_history[-1] == model_id
+                        
+                        # 基于出现频率和配置权重降低权重 - 使用指数惩罚增强效果
+                        frequency = occurrence_count / history_size
+                        penalty_factor = frequency * consecutive_weight * 2.0  # 放大2倍
+                        
+                        # 如果是最近使用的模型，额外加重惩罚
+                        if is_recent:
+                            penalty_factor = penalty_factor * 1.5 + 0.2  # 额外加0.2确保明显效果
+                        
+                        # 确保惩罚不会让权重变成负数或太小
+                        penalty_factor = min(penalty_factor, 0.8)
                         weight *= (1.0 - penalty_factor)
                 
                 weighted_models.append((weight, m))
@@ -839,7 +850,12 @@ class RouterEngine:
                     
                     if history_size > 0:
                         # 惩罚强度基于出现频率
-                        penalty_factor = (occurrence_count / history_size) * consecutive_weight
+                        is_recent = len(self._consecutive_model_history) &gt; 0 and self._consecutive_model_history[-1] == model_id
+                        frequency = occurrence_count / history_size
+                        penalty_factor = frequency * consecutive_weight * 2.0
+                        if is_recent:
+                            penalty_factor = penalty_factor * 1.5 + 0.2
+                        penalty_factor = min(penalty_factor, 0.8)
                         consecutive_penalty = penalty_factor
                 
                 # 加权求和
@@ -1808,6 +1824,7 @@ class RouterEngine:
                     
                     # Record Success for Adaptive Routing
                     self._record_success(model_id_for_stats)
+                    self._record_model_usage(model_id_for_stats)
 
                     # 3. Log: Full Response (Success)
                     end_time = time.time()
