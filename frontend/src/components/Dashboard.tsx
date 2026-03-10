@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend } from 'recharts';
 import { Activity, AlertTriangle, HeartPulse, Coins, Info, ChevronDown, ChevronUp } from 'lucide-react';
 import { fetchStats, fetchModelStats, Stats } from '@/lib/api';
 import { Button } from "@/components/ui/button";
@@ -258,28 +258,15 @@ export function Dashboard() {
           </CardHeader>
           <CardContent className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={stats?.model_distribution}
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={100}
-                  fill="#8884d8"
-                  paddingAngle={2}
-                  dataKey="count"
-                  nameKey="model"
-                  label={({ name, percent }: { name?: string; percent?: number }) => `${name || ''} (${((percent || 0) * 100).toFixed(0)}%)`}
-                  labelLine={true}
-                >
-                  {stats?.model_distribution.map((_entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Pie>
+              <BarChart data={stats?.model_distribution} layout="vertical" margin={{ left: 20, right: 20 }}>
+                <XAxis type="number" tickFormatter={(val) => val >= 1000 ? `${(val/1000).toFixed(1)}k` : val} />
+                <YAxis type="category" dataKey="model" width={120} tick={{fontSize: 12}} />
                 <Tooltip 
-                  formatter={(value: any, name?: string) => [value, name === 'count' ? '请求量' : (name || '')]}
+                  formatter={(value: any) => [value, '请求量']}
+                  labelFormatter={(label) => `模型: ${label}`}
                 />
-                <Legend />
-              </PieChart>
+                <Bar dataKey="count" fill="#0ea5e9" radius={[0, 4, 4, 0]} />
+              </BarChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
