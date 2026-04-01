@@ -2056,8 +2056,8 @@ class RouterEngine:
             final_payload["stream"] = False
         else:
             final_payload["stream"] = True
-            # Enable usage reporting for streaming
-            final_payload["stream_options"] = {"include_usage": True}
+            # Disable stream_options for Gemini compatibility
+            # final_payload["stream_options"] = {"include_usage": True}
         
         payload = final_payload
         # -----------------------------
