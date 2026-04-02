@@ -2015,10 +2015,14 @@ class RouterEngine:
         payload["model"] = model_id
         
         # Check Protocol for Stream
+        # Respect user's stream preference from the original request
+        user_stream_pref = payload.get("stream")
         if protocol == "v1-messages" or protocol == "v1-response":
             payload["stream"] = False
+        elif user_stream_pref is not None:
+            payload["stream"] = user_stream_pref
         else:
-            payload["stream"] = True # Force stream for aggregation
+            payload["stream"] = True  # Default to stream for aggregation
         
         config = config_manager.get_config()
         
@@ -2055,10 +2059,15 @@ class RouterEngine:
         if protocol == "v1-messages" or protocol == "v1-response":
             final_payload["stream"] = False
         else:
-            final_payload["stream"] = True
+            # Respect user's stream preference if explicitly set, otherwise default to True
+            user_stream = request_dict.get("stream")
+            if user_stream is not None:
+                final_payload["stream"] = user_stream
+            else:
+                final_payload["stream"] = True
             # Disable stream_options for Gemini compatibility
             # final_payload["stream_options"] = {"include_usage": True}
-        
+
         payload = final_payload
         # -----------------------------
         
@@ -2489,17 +2498,23 @@ class RouterEngine:
              except Exception:
                  raise
 
+        # Handle non-stream OpenAI protocol requests
+        if protocol == "openai" and not payload.get("stream", True):
+            return await self._call_upstream_non_stream(
+                payload, base_url, headers, timeout_config, trace_id, retry_count, req_start_time, trace_callback, model_id
+            )
+
         try:
             # Manually manage the stream context to decouple TTFT timeout from Body timeout
             # Use global client with specific request timeout
-            
+
             # Determine which client to use based on verify_ssl requirement
             temp_client = None
             client_to_use = self._client
-            
+
             # FORCE DISABLE SSL VERIFICATION as requested by user (stream)
             verify_ssl = False
-            
+
             # Create a temporary client with verify=False
             # Inherit global limits if possible, but for temp usage default is fine
             temp_client = httpx.AsyncClient(verify=False, timeout=timeout_config)
@@ -2618,15 +2633,20 @@ class RouterEngine:
 
                                         choices = chunk_json.get("choices", [])
                                         if not choices:
+                                            # Some providers (e.g., Gemini) may send chunks without choices initially
+                                            # Don't skip entirely, just continue to next chunk
                                             continue
-                                            
-                                        delta = choices[0].get("delta", {})
-                                        finish_reason = choices[0].get("finish_reason", finish_reason)
-                                        
-                                        # Aggregate Content
+
+                                        delta = choices[0].get("delta", {}) if choices else {}
+                                        finish_reason = choices[0].get("finish_reason", finish_reason) if choices else finish_reason
+
+                                        # Aggregate Content - handle both delta.content and delta.text (Gemini format)
                                         if "content" in delta and delta["content"] is not None:
                                             aggregated_content += delta["content"]
-                                            
+                                        # Handle Gemini's text field in delta
+                                        elif "text" in delta and delta["text"] is not None:
+                                            aggregated_content += delta["text"]
+
                                         # Aggregate Tool Calls
                                         if "tool_calls" in delta and delta["tool_calls"]:
                                             for tc in delta["tool_calls"]:
@@ -2651,7 +2671,9 @@ class RouterEngine:
                                         continue
 
                         # Check for empty content (Retry trigger)
-                        if not aggregated_content and not aggregated_tool_calls:
+                        # Strip whitespace when checking for empty content to handle providers that send only whitespace
+                        content_stripped = aggregated_content.strip() if aggregated_content else ""
+                        if not content_stripped and not aggregated_tool_calls:
                             if config.retries.conditions.retry_on_empty:
                                 raise Exception("Empty Response: Upstream returned empty content and no tool calls")
                             else:
@@ -2894,5 +2916,81 @@ class RouterEngine:
                 "success": False,
                 "error": str(e)
             }
+
+    async def _call_upstream_non_stream(self, payload: Dict[str, Any], base_url: str, headers: Dict[str, str], timeout_config, trace_id: str, retry_count: int, req_start_time: float, trace_callback, model_id: str) -> Dict[str, Any]:
+        """Handle non-stream OpenAI protocol requests."""
+        config = config_manager.get_config()
+
+        base = base_url.rstrip('/')
+        if base.endswith("/chat/completions"):
+            url = base
+        elif base.endswith("/"):
+            url = f"{base}chat/completions"
+        else:
+            url = f"{base}/chat/completions"
+
+        temp_client = None
+        try:
+            temp_client = httpx.AsyncClient(verify=False, timeout=timeout_config)
+
+            logger.info(f"Upstream Request (Non-Stream): {url}")
+
+            response = await temp_client.post(url, json=payload, headers=headers, timeout=timeout_config)
+
+            ttft_time = time.time()
+            duration_ttft = (ttft_time - req_start_time) * 1000
+            trace_logger.log(trace_id, "FIRST_TOKEN", ttft_time, duration_ttft, "success", retry_count, details=f"完整响应 (No Stream) | 模型: {model_id}")
+            if trace_callback:
+                trace_callback("FIRST_TOKEN", ttft_time, duration_ttft, "success", retry_count)
+
+            if response.status_code != 200:
+                error_str = response.text
+                should_retry = False
+                if response.status_code in config.retries.conditions.status_codes:
+                    should_retry = True
+
+                if not should_retry:
+                    lower_error = error_str.lower()
+                    for k in config.retries.conditions.error_keywords:
+                        if k in lower_error:
+                            should_retry = True
+                            break
+
+                if should_retry:
+                    raise Exception(f"Upstream Error (Retryable): {response.status_code} - {error_str}")
+                else:
+                    raise Exception(f"Upstream Error: {response.status_code} - {error_str}")
+
+            response_data = response.json()
+
+            # Check for empty response
+            choices = response_data.get("choices", [])
+            if choices:
+                message = choices[0].get("message", {})
+                content = message.get("content", "")
+                if not content and not message.get("tool_calls"):
+                    if config.retries.conditions.retry_on_empty:
+                        raise Exception("Empty Response: Upstream returned empty content and no tool calls")
+
+            full_resp_time = time.time()
+            duration_since_ttft = (full_resp_time - ttft_time) * 1000
+
+            usage = response_data.get("usage", {})
+            p_tok = usage.get("prompt_tokens", 0)
+            c_tok = usage.get("completion_tokens", 0)
+
+            trace_logger.log(trace_id, "FULL_RESPONSE", full_resp_time, duration_since_ttft, "success", retry_count, details=f"完整响应接收完毕 | Tokens: {p_tok}+{c_tok}")
+            if trace_callback:
+                trace_callback("FULL_RESPONSE", full_resp_time, duration_since_ttft, "success", retry_count)
+
+            return response_data
+
+        except httpx.ReadTimeout:
+            raise Exception("Total Timeout (Read): Read timeout from upstream")
+        except httpx.ConnectTimeout:
+            raise Exception("Connect Timeout: Connect timeout to upstream")
+        finally:
+            if temp_client:
+                await temp_client.aclose()
 
 router_engine = RouterEngine()
