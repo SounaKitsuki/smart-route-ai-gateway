@@ -1441,7 +1441,7 @@ class RouterEngine:
                         has_images = self._has_image_content(request.messages)
                         model_multimodal = normalized.get("multimodal", True)
                         logger.info(f"  [图片处理_DEBUG] has_images: {has_images}, model_multimodal: {model_multimodal}")
-                        
+
                         processed_request = request
                         log_messages = request.messages
                         if has_images:
@@ -1450,10 +1450,10 @@ class RouterEngine:
                                     logger.info(f"  [图片处理] 检测到图片内容，但模型不支持多模态。开始图片转述...")
                                     image_start_time = time.time()
                                     add_trace_event("IMAGE_TRANSCRIBE_START", image_start_time, 0, "success", retry_count)
-                                    
+
                                     logger.info(f"  [图片处理_DEBUG] 调用 _process_messages_with_images, preserve_original=False")
                                     processed_messages = await self._process_messages_with_images(
-                                        request.messages, 
+                                        request.messages,
                                         preserve_original=False
                                     )
                                     logger.info(f"  [图片处理_DEBUG] _process_messages_with_images 完成，构建新请求")
@@ -1475,45 +1475,15 @@ class RouterEngine:
                                         response_format=request.response_format
                                     )
                                     log_messages = processed_messages
-                                    
+
                                     image_end_time = time.time()
                                     image_duration = (image_end_time - image_start_time) * 1000
                                     add_trace_event("IMAGE_TRANSCRIBE_DONE", image_end_time, image_duration, "success", retry_count)
                                     logger.info(f"  [图片处理] 图片转述完成，准备发送请求")
                                 else:
-                                    logger.info(f"  [图片处理] 检测到图片内容，模型支持多模态。先描述图片以缓存，然后保留原始图片...")
-                                    image_start_time = time.time()
-                                    add_trace_event("IMAGE_CACHE_START", image_start_time, 0, "success", retry_count)
-                                    
-                                    logger.info(f"  [图片处理_DEBUG] 调用 _process_messages_with_images, preserve_original=True")
-                                    processed_messages = await self._process_messages_with_images(
-                                        request.messages, 
-                                        preserve_original=True
-                                    )
-                                    logger.info(f"  [图片处理_DEBUG] _process_messages_with_images 完成，构建新请求")
-                                    processed_request = ChatCompletionRequest(
-                                        model=request.model,
-                                        messages=processed_messages,
-                                        temperature=request.temperature,
-                                        top_p=request.top_p,
-                                        n=request.n,
-                                        stream=request.stream,
-                                        stop=request.stop,
-                                        max_tokens=request.max_tokens,
-                                        presence_penalty=request.presence_penalty,
-                                        frequency_penalty=request.frequency_penalty,
-                                        logit_bias=request.logit_bias,
-                                        user=request.user,
-                                        tools=request.tools,
-                                        tool_choice=request.tool_choice,
-                                        response_format=request.response_format
-                                    )
-                                    log_messages = processed_messages
-                                    
-                                    image_end_time = time.time()
-                                    image_duration = (image_end_time - image_start_time) * 1000
-                                    add_trace_event("IMAGE_CACHE_DONE", image_end_time, image_duration, "success", retry_count)
-                                    logger.info(f"  [图片处理] 图片描述缓存完成，保留原始图片")
+                                    # 多模态模型：直接使用原始请求，不做任何图片处理
+                                    logger.info(f"  [图片处理] 检测到图片内容，模型支持多模态。直接使用原始图片，跳过转述...")
+                                    # 保持 processed_request = request 和 log_messages = request.messages 不变
                             except Exception as e:
                                 logger.error(f"  [图片处理] 图片处理流程异常: {str(e)}")
                                 logger.error(f"  [图片处理_DEBUG] 图片处理流程完整堆栈跟踪:\n{traceback.format_exc()}")
