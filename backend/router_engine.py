@@ -1170,7 +1170,7 @@ class RouterEngine:
                         json={
                             "model": config.router.model,
                             "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 10,
+                            "max_tokens": 512,
                             "temperature": 0.0,
                             "stream": False
                         },
