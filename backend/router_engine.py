@@ -1171,7 +1171,8 @@ class RouterEngine:
                             "model": config.router.model,
                             "messages": [{"role": "user", "content": prompt}],
                             "max_tokens": 10,
-                            "temperature": 0.0
+                            "temperature": 0.0,
+                            "stream": False
                         },
                         headers={"Authorization": f"Bearer {api_key}"},
                         timeout=30.0
